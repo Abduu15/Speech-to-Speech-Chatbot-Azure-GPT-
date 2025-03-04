@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech-to-Speech Chatbot</title>
+    <style>
+        /* Basic page layout styling */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        /* Style for the container that wraps all content */
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 100%; /* Adjusts to window width */
+        }
+
+        /* Styling for the header with the title and button */
+        .header {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 20px; /* Space between header and output area */
+        }
+
+        /* Style for the chat message display area */
+        #output {
+            background-color: #fff;
+            border-radius: 10px;
+            padding: 20px;
+            width: 90%; /* Dynamic width */
+            max-width: 1500px; /* Maximum width */
+            max-height: 80vh; /* Maximum height */
+            overflow-y: auto; /* Enables scrolling when necessary */
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            font-size: 1.2em;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+        }
+
+        /* Styling for the main title */
+        h1 {
+            margin-bottom: 10px; /* Space between title and output window */
+        }
+
+        /* General style for chat messages */
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: 500;
+        }
+
+        /* Styling for user messages */
+        .user-message {
+            background-color: #e0f7fa;
+            color: #00796b;
+        }
+
+        /* Styling for chatbot messages */
+        .ai-message {
+            background-color: #e8f5e9;
+            color: #388e3c;
+        }
+
+        /* Styling for system messages (e.g., errors) */
+        .system-message {
+            background-color: #FF6961;
+            color: #010e0c;
+        }
+
+        /* Button styling */
+        button {
+            background-color: #388e3c;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            font-size: 1em;
+            cursor: pointer;
+        }
+
+        /* Hover effect for the button */
+        button:hover {
+            background-color: #2c6e27;
+        }
+    </style>
+    <script>
+        // ----------------------------------- Global Variables -----------------------------------
+        let socket;
+        let isSpeaking = false;
+        let isRecording = false;
+        let stopRequested = false;
+        let azureRecognizer;
+
+        // Azure Configuration - Replace with your actual subscription details
+        const subscriptionKey = "YOUR_AZURE_SUBSCRIPTION_KEY";
+        const serviceRegion = "YOUR_AZURE_REGION";
+
+        // ----------------------------------- Function for Start Sound -----------------------------------
+        function playStartSound() {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            oscillator.type = "sine";
+            oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
+            oscillator.connect(audioCtx.destination);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.2);
+        }
+
+        // ----------------------------------- Start Speech Recording (Azure STT) -----------------------------------
+        async function startRecording() {
+            if (isSpeaking || isRecording) return;
+
+            playStartSound();
+            const output = document.getElementById("output");
+            isRecording = true;
+            stopRequested = false;
+
+            // WebSocket connection to the server (replace with your actual ngrok URL if needed)
+            socket = new WebSocket("wss://your-ngrok-url/ws/recording");
+
+            socket.onmessage = function (event) {
+                const message = event.data;
+                if (isSpeaking) {
+                    return;
+                } else {
+                    handleMessage(message);
+                }
+            };
+
+            socket.onerror = function (error) {
+                console.error("WebSocket error: ", error);
+            };
+
+            socket.onclose = function () {
+                isRecording = false;
+            };
+
+            // Configure Azure Speech SDK for Speech-to-Text
+            const speechSDK = window.SpeechSDK;
+            const audioConfig = speechSDK.AudioConfig.fromDefaultMicrophoneInput();
+            const speechConfig = speechSDK.SpeechConfig.fromSubscription(subscriptionKey, serviceRegion);
+            speechConfig.speechRecognitionLanguage = "en-US";
+            azureRecognizer = new speechSDK.SpeechRecognizer(speechConfig, audioConfig);
+
+            // Event for intermediate recognition (while speaking)
+            azureRecognizer.recognizing = function (s, e) {
+                console.log(`Recognized (intermediate): ${e.result.text}`);
+            };
+
+            // Event when recognition is complete
+            azureRecognizer.recognized = function (s, e) {
+                if (e.result.reason === speechSDK.ResultReason.RecognizedSpeech) {
+                    console.log(`Recognized (final): ${e.result.text}`);
+                    const transcript = e.result.text;
+
+                    if (transcript.toLowerCase().includes("stop recording")) {
+                        stopRecording();
+                        stopRequested = true;
+                        const messageElement = document.createElement("div");
+                        messageElement.classList.add("message", "user-message");
+                        messageElement.textContent = "You: Stop recording";
+                        output.appendChild(messageElement);
+                        const messageElementStopp = document.createElement("div");
+                        messageElementStopp.classList.add("message", "system-message");
+                        messageElementStopp.textContent = "Recording stopped.";
+                        output.appendChild(messageElementStopp);
+                        output.scrollTop = output.scrollHeight;
+                        return;
+                    }
+
+                    const messageElement = document.createElement("div");
+                    messageElement.classList.add("message", "user-message");
+                    messageElement.textContent = "You: " + transcript;
+                    output.appendChild(messageElement);
+
+                    socket.send(transcript);
+                } else if (e.result.reason === speechSDK.ResultReason.NoMatch) {
+                    console.log("Keine Sprache erkannt.");
+                    const messageElementSprache = document.createElement('div');
+                    messageElementSprache.classList.add('message', 'system-message');
+                    messageElementSprache.textContent = "No speech recognized. Please try again.";
+                    output.appendChild(messageElementSprache);
+                }
+            output.scrollTop = output.scrollHeight;
+            };
+
+            // Event when recognition is canceled
+            azureRecognizer.canceled = function (s, e) {
+                console.log(`Recognition canceled: ${e.reason}`);
+                isRecording = false;
+            };
+
+            // Event when session stops
+            azureRecognizer.sessionStopped = function () {
+                console.log("Recognition session ended.");
+                isRecording = false;
+            };
+
+            // Start continuous speech recognition
+            azureRecognizer.startContinuousRecognitionAsync();
+        }
+
+        // ----------------------------------- Process Incoming Messages -----------------------------------
+        function handleMessage(message) {
+            const output = document.getElementById("output");
+            const messageElement = document.createElement("div");
+            messageElement.classList.add("message");
+
+            if (message.includes("Recognized:")) {
+                messageElement.classList.add("user-message");
+            } else {
+                messageElement.classList.add("ai-message");
+            }
+
+            messageElement.textContent = message;
+            output.appendChild(messageElement);
+            output.scrollTop = output.scrollHeight;
+
+            if (message.includes("Response:")) {
+                const response = message.replace("Response: ", "");
+                stopRecording();
+                speakTextWithAzure(response);
+            }
+        }
+
+        // ----------------------------------- Stop Speech Recording -----------------------------------
+        function stopRecording() {
+            if (azureRecognizer) {
+                azureRecognizer.stopContinuousRecognitionAsync(
+                    () => console.log("Azure Speech Recognizer stopped."),
+                    (err) => console.error("Error stopping recognizer: ", err)
+                );
+            }
+            if (socket) {
+                socket.close();
+            }
+            isRecording = false;
+        }
+
+        // ----------------------------------- Read text aloud with Azure TTS -----------------------------------
+        // Function to read text aloud using Azure (Text-to-Speech application)
+        function speakTextWithAzure(text) {
+            const speechSDK = window.SpeechSDK;
+            const speechConfig = speechSDK.SpeechConfig.fromSubscription(subscriptionKey, serviceRegion);
+
+            // Configure voice and language
+            speechConfig.speechSynthesisLanguage = "en-US";
+            speechConfig.speechSynthesisVoiceName = "en-US-JennyNeural";
+
+            const audioConfig = speechSDK.AudioConfig.fromDefaultSpeakerOutput();
+            const synthesizer = new speechSDK.SpeechSynthesizer(speechConfig, audioConfig);
+
+            isSpeaking = true;
+
+            // Start speech synthesis
+            synthesizer.speakTextAsync(
+                text,
+                result => {
+                    if (result.reason === speechSDK.ResultReason.SynthesizingAudioCompleted) {
+                        console.log("Speech synthesis completed.");
+
+                        // Calculate audio duration from ticks and convert it to milliseconds
+                        const audioDurationMs = result.audioDuration / 10000;
+                        console.log(`Speech synthesis duration: ${audioDurationMs} ms`);
+
+                        // Speech synthesis finished, wait for the duration before starting recording again
+                        setTimeout(() => {
+                            isSpeaking = false;
+                            if (!stopRequested) {
+                                startRecording();
+                            }
+                        }, audioDurationMs);
+                    } else {
+                        console.error("Error during speech synthesis:", result.errorDetails);
+                        synthesizer.close();
+                        isSpeaking = false;
+                    }
+                    synthesizer.close();
+                },
+                error => {
+                    console.error("Error during speech synthesis:", error);
+                    synthesizer.close();
+                    isSpeaking = false;
+                }
+            );
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Speech-to-Speech Chatbot</h1>
+            <button onclick="startRecording()">Start Recording</button>
+        </div>
+        <div id="output"></div>
+    </div>
+    <script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
+</body>
+</html>
